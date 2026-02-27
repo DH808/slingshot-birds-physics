@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>愤怒小鸟·物理版（单关）</title>
+  <style>
+    :root{color-scheme:dark;--bg0:#070a10;--bg1:#0b1320;--card:rgba(255,255,255,.06);--stroke:rgba(255,255,255,.12);--text:#e8eef5;--muted:rgba(232,238,245,.75);
+      --wood:#b8793f;--stone:#9aa5b1;--glass:#67c1ff;--pig:#66ffb2;--bird:#ffcc66;--accent:#66e0ff;}
+    body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(1200px 900px at 15% 10%, rgba(102,224,255,.10), transparent 55%),radial-gradient(900px 700px at 90% 30%, rgba(255,204,102,.08), transparent 55%),linear-gradient(180deg,var(--bg0),var(--bg1));color:var(--text);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif;}
+    .wrap{width:min(94vw,820px);padding:16px;box-sizing:border-box;}
+    h1{margin:0 0 6px;font-size:18px;font-weight:900;letter-spacing:.2px;}
+    .sub{margin:0 0 12px;font-size:13px;color:var(--muted);line-height:1.45;}
+    .panel{background:var(--card);border:1px solid var(--stroke);border-radius:16px;padding:12px;box-shadow:0 14px 48px rgba(0,0,0,.40);}
+    canvas{width:100%;height:auto;border-radius:14px;border:1px solid rgba(255,255,255,.10);background:#0c111a;touch-action:none;display:block;}
+    .bar{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-top:10px;}
+    .pill{padding:8px 10px;border-radius:999px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06);font-size:13px;}
+    button{appearance:none;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.10);color:inherit;padding:10px 12px;border-radius:12px;font-weight:900;font-size:14px;}
+    button:active{transform:translateY(1px) scale(.99);}
+    .footer{margin-top:10px;font-size:12px;color:rgba(232,238,245,.72);}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>愤怒小鸟·物理版（单关）</h1>
+    <p class="sub">拖拽小鸟→松手发射。木头易碎、石头更硬、玻璃易碎但更滑。目标：清掉所有小猪。此版本改用 Box2D(Planck.js) 提升物理可信度。</p>
+    <div class="panel"><canvas id="c" width="960" height="540"></canvas></div>
+    <div class="bar">
+      <div class="pill">剩余小鸟：<span id="birds">3</span></div>
+      <div class="pill">小猪：<span id="pigs">3</span></div>
+      <div class="pill">提示：拖拽距离越大，速度越快</div>
+      <button id="reset">重开</button>
+    </div>
+    <div class="footer">说明：这版重点是“物理可信+手感可预期”，美术/音效后续再加。</div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/planck-js@0.3.0/dist/planck.min.js"></script>
+  <script>
+  (() => {
+    const pl = planck;
+    const Vec2 = pl.Vec2;
+
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    const birdsEl = document.getElementById('birds');
+    const pigsEl = document.getElementById('pigs');
+    const resetBtn = document.getElementById('reset');
+
+    const W = canvas.width, H = canvas.height;
+
+    // pixels-per-meter (tuned for Box2D stability)
+    const PPM = 30;
+    const toWorld = (px, py) => Vec2(px/PPM, (H-py)/PPM);
+    const toScreen = (v) => ({ x: v.x*PPM, y: H - v.y*PPM });
+
+    // fixed time step
+    const dt = 1/60;
+
+    let world, ground, slingAnchor, birdBodies=[], pigBodies=[], blockBodies=[];
+    let currentBird = null;
+    let dragging = false;
+    let dragPointer = {x:0,y:0};
+    let birdsLeft = 3;
+
+    const COLORS = {
+      wood: getCSS('--wood'), stone: getCSS('--stone'), glass: getCSS('--glass'), pig: getCSS('--pig'), bird: getCSS('--bird'),
+      ui: '#e8eef5'
+    };
+
+    function getCSS(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+
+    function reset(){
+      world = new pl.World({ gravity: Vec2(0, -10) });
+      birdBodies=[]; pigBodies=[]; blockBodies=[];
+      birdsLeft=3;
+
+      // ground
+      ground = world.createBody();
+      ground.createFixture(pl.Edge(Vec2(-10, 0.6), Vec2(50, 0.6)), { friction: 0.9 });
+
+      // slingshot anchor
+      slingAnchor = Vec2(5.3, 4.2); // ~ (160px, 415px)
+
+      buildLevel1();
+      buildBirdQueue();
+      setCurrentBird(0);
+
+      updateHUD();
+    }
+
+    function buildLevel1(){
+      // platform
+      addBox(22, 2.2, 8.5, 0.5, {type:'static', mat:'stone'});
+
+      // tower: wood columns + wood beam + stone core + glass cap
+      addBox(20.5, 4.1, 0.5, 2.2, {mat:'wood', hp:30});
+      addBox(23.5, 4.1, 0.5, 2.2, {mat:'wood', hp:30});
+      addBox(22.0, 6.3, 3.8, 0.45, {mat:'wood', hp:24});
+
+      addBox(22.0, 7.6, 0.55, 1.8, {mat:'stone', hp:60});
+      addBox(23.1, 9.0, 2.2, 0.35, {mat:'glass', hp:14});
+
+      // pigs
+      addPig(22.0, 3.6, 0.45);
+      addPig(21.2, 6.9, 0.38);
+      addPig(23.1, 9.6, 0.38);
+    }
+
+    function buildBirdQueue(){
+      // birds in line
+      birdBodies.push(addBird(4.2, 3.0, 0.45));
+      birdBodies.push(addBird(3.2, 2.9, 0.38));
+      birdBodies.push(addBird(2.4, 2.85, 0.38));
+    }
+
+    function addBird(x,y,r){
+      const b = world.createDynamicBody({ position: Vec2(x,y), bullet: true, linearDamping: 0.15, angularDamping: 0.20 });
+      b.createFixture(pl.Circle(r), { density: 1.8, friction: 0.8, restitution: 0.15 });
+      b.setUserData({ kind:'bird' });
+      return b;
+    }
+
+    function addPig(x,y,r){
+      const p = world.createDynamicBody({ position: Vec2(x,y), linearDamping: 0.25, angularDamping: 0.35 });
+      p.createFixture(pl.Circle(r), { density: 0.9, friction: 0.6, restitution: 0.05 });
+      p.setUserData({ kind:'pig', hp: 18 });
+      pigBodies.push(p);
+      return p;
+    }
+
+    function addBox(x,y,w,h,opt={}){
+      const type = opt.type==='static' ? 'static' : 'dynamic';
+      const body = type==='static' ? world.createBody({ position: Vec2(x,y) }) : world.createDynamicBody({ position: Vec2(x,y) });
+      const mat = opt.mat || 'wood';
+      const density = mat==='stone'? 2.8 : (mat==='wood'? 1.3 : 0.9);
+      const friction = mat==='glass'? 0.2 : (mat==='stone'?0.9:0.6);
+      const restitution = mat==='glass'? 0.05 : 0.02;
+      body.createFixture(pl.Box(w/2,h/2), { density, friction, restitution });
+      body.setUserData({ kind:'block', mat, hp: opt.hp ?? (mat==='stone'? 70 : mat==='wood'? 35 : 16) });
+      if(type!=='static') blockBodies.push(body);
+      return body;
+    }
+
+    function setCurrentBird(i){
+      currentBird = birdBodies[i] || null;
+      if(!currentBird) return;
+      // put at anchor slightly
+      currentBird.setLinearVelocity(Vec2(0,0));
+      currentBird.setAngularVelocity(0);
+      currentBird.setPosition(Vec2(slingAnchor.x-0.2, slingAnchor.y-0.15));
+    }
+
+    function clampDrag(p){
+      const maxR = 2.7; // meters
+      const d = p.sub(slingAnchor);
+      const len = d.length();
+      if(len > maxR){
+        return slingAnchor.add(d.mul(maxR/len));
+      }
+      return p;
+    }
+
+    function launch(){
+      if(!currentBird) return;
+      const p = clampDrag(toWorld(dragPointer.x, dragPointer.y));
+      const d = slingAnchor.sub(p); // pull vector
+      // non-linear power curve for better feel
+      const len = Math.min(2.7, d.length());
+      const power = 7.5 * (0.6*len + 0.4*len*len);
+      const v = d.clone();
+      if(v.length() > 0) v.set(v.x/v.length(), v.y/v.length());
+      const vel = v.mul(power);
+      currentBird.setLinearVelocity(vel);
+      dragging = false;
+      birdsLeft = Math.max(0, birdsLeft-1);
+      updateHUD();
+
+      // schedule next bird once current slows
+      const launchedBird = currentBird;
+      currentBird = null;
+      let t = 0;
+      const check = () => {
+        t += 1;
+        const sp = launchedBird.getLinearVelocity().length();
+        if(sp < 0.25 || t>260){
+          const idx = 3 - birdsLeft;
+          if(birdsLeft>0) setCurrentBird(idx);
+          return;
+        }
+        requestAnimationFrame(check);
+      };
+      requestAnimationFrame(check);
+    }
+
+    function updateHUD(){
+      birdsEl.textContent = birdsLeft;
+      pigsEl.textContent = pigBodies.filter(p=>p && p.getUserData()?.hp>0).length;
+    }
+
+    // damage system using contact impulse approximation
+    world.on('post-solve', (contact, impulse) => {
+      const a = contact.getFixtureA().getBody();
+      const b = contact.getFixtureB().getBody();
+      const n = impulse.normalImpulses && impulse.normalImpulses[0] ? impulse.normalImpulses[0] : 0;
+      const dmg = n * 0.02;
+
+      for(const body of [a,b]){
+        const ud = body.getUserData();
+        if(!ud || !ud.hp) continue;
+        // pigs more fragile
+        const mult = ud.kind==='pig' ? 1.25 : (ud.mat==='glass'?1.35:1.0);
+        ud.hp -= dmg*mult;
+        if(ud.hp <= 0){
+          // destroy body
+          try{ world.destroyBody(body); }catch(e){}
+        }
+      }
+      updateHUD();
+    });
+
+    // input
+    function getCanvasPos(e){
+      const rect = canvas.getBoundingClientRect();
+      const clientX = e.touches? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches? e.touches[0].clientY : e.clientY;
+      return {
+        x: (clientX - rect.left) * (canvas.width/rect.width),
+        y: (clientY - rect.top) * (canvas.height/rect.height)
+      };
+    }
+
+    canvas.addEventListener('pointerdown', (e) => {
+      if(!currentBird) return;
+      const p = getCanvasPos(e);
+      dragPointer = p;
+      // allow drag only near bird
+      const bw = toScreen(currentBird.getPosition());
+      const dx = p.x - bw.x, dy = p.y - bw.y;
+      if(Math.hypot(dx,dy) < 48){
+        dragging = true;
+        canvas.setPointerCapture(e.pointerId);
+      }
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      if(!dragging) return;
+      dragPointer = getCanvasPos(e);
+      // move bird with pointer (kinematic-like)
+      const wp = clampDrag(toWorld(dragPointer.x, dragPointer.y));
+      currentBird.setPosition(wp);
+      currentBird.setLinearVelocity(Vec2(0,0));
+    });
+    canvas.addEventListener('pointerup', (e) => {
+      if(!dragging) return;
+      dragPointer = getCanvasPos(e);
+      launch();
+    });
+
+    canvas.addEventListener('touchmove', (e) => e.preventDefault(), { passive:false });
+
+    resetBtn.addEventListener('click', reset);
+
+    function draw(){
+      ctx.clearRect(0,0,W,H);
+      // background
+      ctx.fillStyle = '#0c111a';
+      ctx.fillRect(0,0,W,H);
+
+      // ground line
+      ctx.strokeStyle = 'rgba(255,255,255,.10)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      const gy = toScreen(Vec2(0,0.6)).y;
+      ctx.moveTo(0, gy);
+      ctx.lineTo(W, gy);
+      ctx.stroke();
+
+      // slingshot
+      const a = toScreen(slingAnchor);
+      ctx.fillStyle = 'rgba(255,255,255,.20)';
+      ctx.fillRect(a.x-18, a.y+30, 10, 70);
+      ctx.fillRect(a.x+8, a.y+30, 10, 70);
+
+      // sling band
+      if(currentBird){
+        const b = toScreen(currentBird.getPosition());
+        ctx.strokeStyle = 'rgba(255,255,255,.35)';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(a.x-10, a.y+36);
+        ctx.lineTo(b.x, b.y);
+        ctx.lineTo(a.x+10, a.y+36);
+        ctx.stroke();
+      }
+
+      // draw bodies
+      for(let body = world.getBodyList(); body; body = body.getNext()){
+        for(let f = body.getFixtureList(); f; f = f.getNext()){
+          const shape = f.getShape();
+          const ud = body.getUserData()||{};
+          if(shape.getType()==='circle'){
+            const p = toScreen(body.getPosition());
+            const r = shape.m_radius*PPM;
+            ctx.save();
+            ctx.translate(p.x,p.y);
+            ctx.rotate(-body.getAngle());
+            ctx.fillStyle = ud.kind==='bird'? COLORS.bird : (ud.kind==='pig'? COLORS.pig : '#fff');
+            ctx.beginPath();
+            ctx.arc(0,0,r,0,Math.PI*2);
+            ctx.fill();
+            ctx.restore();
+          } else if(shape.getType()==='polygon'){
+            const verts = shape.m_vertices;
+            ctx.save();
+            const p = toScreen(body.getPosition());
+            ctx.translate(p.x,p.y);
+            ctx.rotate(-body.getAngle());
+            ctx.beginPath();
+            ctx.moveTo(verts[0].x*PPM, -verts[0].y*PPM);
+            for(let i=1;i<verts.length;i++) ctx.lineTo(verts[i].x*PPM, -verts[i].y*PPM);
+            ctx.closePath();
+            let fill = COLORS.wood;
+            if(ud.mat==='stone') fill = COLORS.stone;
+            if(ud.mat==='glass') fill = COLORS.glass;
+            if(body.isStatic()) fill = '#24324a';
+            ctx.fillStyle = fill;
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(0,0,0,.25)';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+            ctx.restore();
+          }
+        }
+      }
+
+      // out-of-bounds cleanup
+      cleanup();
+
+      // win/lose hint
+      const pigsLeft = pigBodies.filter(p=>p && p.getUserData()?.hp>0).length;
+      if(pigsLeft===0){
+        ctx.fillStyle = 'rgba(0,0,0,.45)';
+        ctx.fillRect(0,0,W,H);
+        ctx.fillStyle = '#e8eef5';
+        ctx.font = '900 22px system-ui';
+        ctx.textAlign = 'center';
+        ctx.fillText('通关！', W/2, H/2-8);
+        ctx.font = '700 13px system-ui';
+        ctx.fillText('点“重开”再来一局', W/2, H/2+18);
+      } else if(birdsLeft===0 && !currentBird){
+        ctx.fillStyle = 'rgba(0,0,0,.45)';
+        ctx.fillRect(0,0,W,H);
+        ctx.fillStyle = '#e8eef5';
+        ctx.font = '900 22px system-ui';
+        ctx.textAlign = 'center';
+        ctx.fillText('失败', W/2, H/2-8);
+        ctx.font = '700 13px system-ui';
+        ctx.fillText('小猪还活着，点“重开”', W/2, H/2+18);
+      }
+    }
+
+    function cleanup(){
+      // destroy bodies that fall far below
+      for(let body = world.getBodyList(); body; body = body.getNext()){
+        if(body.isStatic()) continue;
+        const p = body.getPosition();
+        if(p.y < -6 || p.x < -8 || p.x > 60){
+          try{ world.destroyBody(body); }catch(e){}
+        }
+      }
+    }
+
+    // fixed-step loop
+    let acc = 0;
+    let last = performance.now();
+    function tick(now){
+      const frame = Math.min(0.05, (now-last)/1000);
+      last = now;
+      acc += frame;
+      while(acc >= dt){
+        world.step(dt);
+        acc -= dt;
+      }
+      draw();
+      requestAnimationFrame(tick);
+    }
+
+    reset();
+    requestAnimationFrame(tick);
+  })();
+  </script>
+</body>
+</html>
