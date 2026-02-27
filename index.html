@@ -29,6 +29,7 @@
     <div class="bar">
       <div class="pill">剩余小鸟：<span id="birds">3</span></div>
       <div class="pill">小猪：<span id="pigs">3</span></div>
+      <div class="pill" style="display:none">dbg:<span id="dbg">0</span></div>
       <div class="pill">提示：拖拽距离越大，速度越快</div>
       <button id="reset">重开</button>
     </div>
@@ -46,6 +47,7 @@
     const birdsEl = document.getElementById('birds');
     const pigsEl = document.getElementById('pigs');
     const resetBtn = document.getElementById('reset');
+    const dbgEl = document.getElementById('dbg');
 
     const W = canvas.width, H = canvas.height;
 
@@ -199,7 +201,7 @@
 
     function updateHUD(){
       birdsEl.textContent = birdsLeft;
-      pigsEl.textContent = pigBodies.filter(p=>p && p.getUserData()?.hp>0).length;
+      pigsEl.textContent = pigBodies.filter(p=>p && p.getUserData() && p.getUserData().hp>0).length;
     }
 
     // damage system using contact impulse approximation
@@ -267,6 +269,7 @@
     function draw(){
       // debug: if draw is running, tick counter should increase
       window.__dbgTick = (window.__dbgTick||0) + 1;
+      if(dbgEl) dbgEl.textContent = String(window.__dbgTick);
       ctx.clearRect(0,0,W,H);
       // background
       ctx.fillStyle = '#0c111a';
@@ -343,7 +346,7 @@
       cleanup();
 
       // win/lose hint
-      const pigsLeft = pigBodies.filter(p=>p && p.getUserData()?.hp>0).length;
+      const pigsLeft = pigBodies.filter(p=>p && p.getUserData() && p.getUserData().hp>0).length;
       if(pigsLeft===0){
         ctx.fillStyle = 'rgba(0,0,0,.45)';
         ctx.fillRect(0,0,W,H);
