@@ -71,7 +71,11 @@
     function getCSS(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
 
     function reset(){
+      // Box2D coordinates here use y-up; use negative y gravity to pull objects downward on screen.
       world = new pl.World({ gravity: Vec2(0, -10) });
+
+      // debug expose
+      window.__dbg = { world };
       birdBodies=[]; pigBodies=[]; blockBodies=[];
       birdsLeft=3;
 
@@ -261,6 +265,8 @@
     resetBtn.addEventListener('click', reset);
 
     function draw(){
+      // debug: if draw is running, tick counter should increase
+      window.__dbgTick = (window.__dbgTick||0) + 1;
       ctx.clearRect(0,0,W,H);
       // background
       ctx.fillStyle = '#0c111a';
